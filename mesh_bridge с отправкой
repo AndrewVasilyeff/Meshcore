@@ -1,0 +1,98 @@
+1 import asyncio, json, time
+ 2 import paho.mqtt.client as mqtt
+ 3 from meshcore import MeshCore, EventType
+ 4
+ 5 def log(msg):
+ 6     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+ 7
+ 8 MQTT_BROKER = "192.168.0.116"
+ 9 TOPIC_MSG = "meshcore/messages"
+10 TOPIC_STATUS = "meshcore/status"
+11 TOPIC_CMD = "meshcore/command/send"
+12
+13 cmd_queue = asyncio.Queue()
+14 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+15 client.will_set(TOPIC_STATUS, "offline", qos=1, retain=True)
+16
+17 def on_mqtt_msg(client, userdata, msg):
+18     try:
+19         cmd_queue.put_nowait(json.loads(msg.payload.decode('utf-8')))
+20         log("MQTT cmd received")
+21     except Exception as e:
+22         log(f"MQTT err: {e}")
+23
+24 async def process_cmds(mesh):
+25     while True:
+26         cmd = await cmd_queue.get()
+27         try:
+28             message_text = cmd.get("text", "")
+29             if message_text:
+30                 # Генерируем текущее время (Unix timestamp в секундах)
+31                 current_timestamp = int(time.time())
+32                 
+33                 # ВЫЗОВ СТРОГО ПО ВАШЕЙ БИБЛИОТЕКЕ:
+34                 # Передаем chan=1 (канал Family), текст и метку времени для отправки в эфир
+35                 await mesh.commands.send_chan_msg(chan=1, msg=message_text, timestamp=current_timestamp)
+36                 log(f"Sent message to private channel Family: {message_text}")
+37             else:
+38                 log("Send err: Empty text in MQTT message")
+39         except Exception as e:
+40             log(f"Send err: {e}")
+41         finally:
+42             cmd_queue.task_done()
+43
+44 async def main():
+45     log("Starting...")
+46     
+47     # ШАГ 1: Сначала подключаем плату по Serial, пока ничего не мешает эфиру
+48     mesh = await MeshCore.create_serial("/dev/ttyUSB0", 115200)
+49     
+50     # Защита: проверим, что библиотека успешно создала объект подключения
+51     if mesh is None:
+52         log("CRITICAL: Failed to connect to Heltec! Check wire or if serial port is busy.")
+53         return
+54         
+55     log("Heltec OK")
+56
+57     
+58     # ШАГ 2: Вешаем обработчики на события LoRa
+59     async def on_ch(ev):
+60         d = ev.payload
+61         log(f"CH {d.get('channel_idx')}: {d.get('text')}")
+62         client.publish(TOPIC_MSG, json.dumps({"type":"channel", "ch":d.get('channel_idx'), "text":d.get('text')}, ensure_ascii=False>
+63         
+64     async def on_dm(ev):
+65         d = ev.payload
+66         log(f"DM {d.get('pubkey_prefix')}: {d.get('text')}")
+67         client.publish(TOPIC_MSG, json.dumps({"type":"direct", "sender":d.get('pubkey_prefix'), "text":d.get('text')}, ensure_ascii=>
+68
+69     mesh.subscribe(EventType.CHANNEL_MSG_RECV, on_ch)
+70     mesh.subscribe(EventType.CONTACT_MSG_RECV, on_dm)
+71     
+72     # ШАГ 3: Запускаем авто-опрос LoRa платы
+73     await mesh.start_auto_message_fetching()
+74     
+75     # ШАГ 4: И только теперь, когда плата завелась, подключаем MQTT и запускаем обработчик команд
+76     client.on_message = on_mqtt_msg
+77     client.connect(MQTT_BROKER, 1883, 60)
+78     client.loop_start()
+79     client.publish(TOPIC_STATUS, "online", qos=1, retain=True)
+80     client.subscribe(TOPIC_CMD)
+81     log("MQTT OK")
+82     
+83     asyncio.create_task(process_cmds(mesh))
+84     log("Running.")
+85     
+86     try:
+87         while True:
+88             await asyncio.sleep(1)
+89     except KeyboardInterrupt:
+90         log("Stop.")
+91     finally:
+92         await mesh.stop_auto_message_fetching()
+93         client.publish(TOPIC_STATUS, "offline", qos=1, retain=True)
+94         client.loop_stop()
+95
+96 if __name__ == '__main__':
+97     asyncio.run(main())
+98
