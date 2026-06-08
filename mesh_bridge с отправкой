@@ -27,20 +27,20 @@
 27         try:
 28             message_text = cmd.get("text", "")
 29             if message_text:
-30                 # Генерируем текущее время (Unix timestamp в секундах)
-31                 current_timestamp = int(time.time())
-32                 
-33                 # ВЫЗОВ СТРОГО ПО ВАШЕЙ БИБЛИОТЕКЕ:
-34                 # Передаем chan=1 (канал Family), текст и метку времени для отправки в эфир
-35                 await mesh.commands.send_chan_msg(chan=1, msg=message_text, timestamp=current_timestamp)
-36                 log(f"Sent message to private channel Family: {message_text}")
-37             else:
-38                 log("Send err: Empty text in MQTT message")
-39         except Exception as e:
-40             log(f"Send err: {e}")
-41         finally:
-42             cmd_queue.task_done()
-43
+30                 # Явно получаем текущий Unix-timestamp через встроенную системную библиотеку globals
+31                 # Это исключит любые конфликты с вашей функцией логирования
+32                 import time as sys_time
+33                 current_timestamp = int(sys_time.time())
+34                 
+35                 # Отправляем сообщение строго по позициям: канал 1, текст, таймстамп
+36                 await mesh.commands.send_chan_msg(1, message_text, current_timestamp)
+37                 log(f"Sent message to private channel Family: {message_text} (TS: {current_timestamp})")
+38             else:
+39                 log("Send err: Empty text in MQTT message")
+40         except Exception as e:
+41             log(f"Send err: {e}")
+42         finally:
+43             cmd_queue.task_done()
 44 async def main():
 45     log("Starting...")
 46     
